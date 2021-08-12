@@ -1,0 +1,276 @@
+---
+title: "Belt and Road Initiative"
+author: "Pasi Kytölä"
+date: "12.8.2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE, message=FALSE}
+library('tidyverse')
+library('readr')
+library('skimr')
+library('janitor')
+library('mice')
+library('lattice')
+library("lme4")
+library('broom.mixed')
+library('sf')
+library('mapview')
+```
+
+## 1. Johdanto
+
+Belt and Road Initiative (BRI) on Kiinan infrastruktuuriprojekti, joka kulkee useiden valtioiden läpi Aasiassa ja Euroopassa. Sitä voisi kai verrata vaikkapa USA:n Interstate Highway System -projektiin, jonka presidentti D. Eisenhower aikanaan käynnisti [1]. BRI käsittää teitä, siltoja voimalaitoksia ja vastaavia mutta myös kauppasopimuksia, kulttuurinvaihtoa ja muita aineettomia projekteja. Center for Strategic and International Studies (CSIS) tekemässä jutussa [2] vuodelta 2018 esitetään, että BRI:n kuuluvia projekteja on hankala identifioida ja että Kiinan investoinnit valuvat myös huomattavissa määrin BRI:n ulkopuolisiin projekteihin ja maihin. Juttu käytti hyväkseen saman organisaation CSIS Reconnecting Asia database -tietokantaa [3] ja siihen perustuen valitsi sieltä noin 173 Kiinan rahoittaa projekia vuosien 2013-2017 välillä. Aineistoon lisättiin taustamuuttujia ja sitten lineaarisilla regressioilla selvitettiin aktiivisuutta BRI:n kuuluvissa ja ulkopuolisissa maissa. Aktiivisuutta mitattiin projektien lukumäärällä [2].
+
+Minua juttu kiinnosti siksi, että osakesalkussani on ollut KraneShares yhtiön pörssinoteerattua rahastoa, OBOR, joka "...seeks to capture the economic growth and monetize the potential upside for the companies involved in China’s One Belt One Road initiative." [4]. Käytän hyväkseni samaa aineistoa ja koetan selvittää samaa asiaa mitä jutussa. En tiedä tarkalleen, miten aineisto juttua varten muodostettiin enkä sitä minkälaisilla malleilla analyysi tehtiin. En lisää mitään taustamuuttujia, muodostan datasta [3] analyysiä varten parhaan harkintani mukaisen pitkittäisaineiston vuosille 2013-2021 ja analysoin aloitettujen projektien lukumäärää yleistetyllä sekamallilla (negatiivisella binomimallilla) BRI:n kuuluvien ja ulkopuolisten maiden välillä. Valitsin ensimmäiseksi satunnaisvaikutukseksi maan ja toiseksi kulmakertoimen ajan suhteen. Ajatus tämän taustalla oli se, että saman maan projektit ovat jollain tavalla toistensa kaltaisia, samalla tavalla kuin pitkittäistutkimuksessa toistuvat havainnot tietyltä henkilöltä ovat. En ottanut aikaa kiinteäksi vaikutukseksi; muutos ajan suhteen ei ollut kiinnostava asia. Mallia sovittaessa R-ohjelmiston lme4 paketin glmer.nb menetelmällä oli hankaluuksia estimoida satunnaisvaikutuksille vaihtelua, ja graafinen tarkastelu kertoikin, että vaihtelua ei ollut kovin paljon aika/maa kombinaatioiden kesken. Mutta joka tapauksessa huomioin saman maan toistuvien mittausten samankaltaisuudet satunnaisvaikutuksilla. 
+
+Juttu [2] mainitsee, että BRI:n projektit asettuisivat kuuteen taloudelliseen käytävään, jotka olisivat
+
+1. China-Pakistan Economic Corridor (CPEC)
+2. Bangladesh-China- India-Myanmar Economic Corridor (BCIMEC)
+3. China-Central Asia- West Asia Economic Corridor (CCWAEC)
+4. China-Indochina Peninsula Economic Corridor (CICPEC)
+5. China-Mongolia-Russia Economic Corridor (CMREC)
+6. New Eurasia Land Bridge Economic Corridor (NELB)
+
+Lisään aineistooni luokitteluasteikollisen muuttujan corridor, johon tulee arvoksi joku ylläolevistä käytävistä tai perustaso ulkopuolinen riippuen kuuluuko maa käytävään vai ulkopuolelle.
+
+Kiinnostava käytännön seikka on, että maan mukana olo BRI:n kuuluvassa käytävässä ei heijastuisi aloitettujen projektien lukumäärään verrattuna ulkopuolisiin maihin. Se ohjaa tarkastelemaan eri silmillä sitä, miten esimerkiksi OBOR ja vastaavat BRI:llä ratsastavat rahastot valitsevat yritykset mihin investoivat.
+
+Kuten CSIS tutkimuksessa vuonna 2018, käytän käynnistettyjen projektien lukumäärää kuvaamaan aktiivisuutta. Harmillisesti tietokannassa on huomattavasti puuttuvia arvoja. Täydessä aineistossa muuttujan 'start_year' arvoista 89 % puuttuu, ja sen jälkeen kun olen rapsinut datasta muut kuin Kiinan rahoittamat sekä BRI kuuluvat projektit pois, on puuttuvien määrä reilu 40 %. Imputoin puuttuvien arvojen paikalle arvoja käyttämällä R ohjelmiston mice pakettia ja predictive mean matching -menetelmää. Selittäjinä aloitusvuoden imputaatiossa käytän kahta muuta aineistossa olevaa vuosilukua (construction_start year ja completion_year) sekä maata, hankkeen tyyppiä (voimalaitos, tie, jne) ja statusta (aloitettu, työn alla, valmis, jne). Näin saan muodostettua pitkittäisaineiston, tai paremminkin useita aineistoja, jossa maittan vuosina 2013-2021 aloitettujen projektien lukumäärät.
+
+## 2. Aineiston valmistelu
+
+```{r, message=FALSE}
+rapd <- readr::read_csv(paste0(getwd(), "/R/Reconnecting Asia Project Database - Project Database.csv"), skip = 4)
+rapd <- janitor::clean_names(rapd)
+names(rapd)
+```
+
+Aineistossa on puuttuvia havaintoja (%) eri muuttujissa seuraavasti:
+```{r}
+nasum<-function(x) {sum(is.na(x))}
+napct<-function(x) { round(nasum(x)/dim(rapd)[1],2) }
+apply(rapd, 2, napct)
+```
+
+Olen kiinnostunut Kiinan (osa)rahoittamista projekteista yleisesti sekä Belt & Road projekteista:
+```{r}
+rapd <- rapd %>% 
+  dplyr::filter(grepl('china', funding_sources, ignore.case = TRUE) | 
+           grepl("belt and road|CPEC|BCIMEC|CCWAEC|CICPEC|CMREC|NELB", initiatives, ignore.case = TRUE))
+```
+
+Poistetaan muuttujia, joita en käytä:
+```{r}
+all <- names(rapd)
+drop <- c(1:2, 5, 7:19, 21:22, 24:25, 27:33)
+keep <- !(1:length(all) %in% drop)
+data <- rapd[, keep]
+```
+
+Otetaan pois sellaiset projektit, joiden status on Cancelled/Decomissioned ja sellaiset joiden arvona status kentässä oli NULL-teksti:
+```{r}
+data <- data[data$status != "NULL",]
+data <- data[data$status != "Cancelled",]
+data <- data[data$status != "Decommissioned",]
+table(data$status, useNA = "always")
+```
+
+'countries'-muuttujassa saattaa olla useita maita listattuna:
+```{r}
+sort(unique(data$countries))
+```
+
+Monistetaan sellaiset rivit, joissa on useita maita ja muodostetaan jokaiselle maalle oma rivinsä:
+```{r}
+data$countries <- stringr::str_remove_all(data$countries,"[']")
+data <- tidyr::separate_rows(data, countries, convert = TRUE, sep = ",")
+data$countries <- stringr::str_trim(data$countries)
+data <- data[data$countries != "North",] #Pohjois-Korea oli pilkulla erotettu, otetaan North pois.
+colnames(data)[2] <- "country"
+sort(unique(data$country))
+```
+
+Jäljellä on yhteensä noin 607 projektia (osa samoja projekteja, jotka syntyivät kun monistin projektin eri maille yllä) ja kuusi muuttujaa:
+```{r}
+names(data)
+dim(data)
+```
+
+Lisätään aineistoon corridor muuttuja, jossa BRI-projektin käytävät:
+```{r}
+CPEC <- c("Pakistan") #China-Pakistan Economic Corridor (CPEC)
+BCIMEC <- c("Bangladesh", #Bangladesh-China- India-Myanmar Economic Corridor (BCIMEC)
+            "India",
+            "Myanmar")
+CCWAEC <- c("Iran", #China-Central Asia- West Asia Economic Corridor (CCWAEC)
+            "Kazakhstan",
+            "Kyrgyzstan",
+            "Tajikistan",
+            "Turkey",
+            "Turkmenistan",
+            "Uzbekistan")
+CICPEC <- c("Cambodia", #China-Indochina Peninsula Economic Corridor (CICPEC)
+            "Laos",
+            "Malaysia",
+            "Myanmar",
+            "Thailand",
+            "Vietnam")
+CMREC <- c("Mongolia", #China-Mongolia-Russia Economic Corridor (CMREC)
+           "Russia")
+NELB <- c("Belarus", #New Eurasia Land Bridge Economic Corridor (NELB)
+          "Czech Republic",
+          "Kazakhstan",
+          "Poland",
+          "Russia",
+          "Germany")
+corridors <- c("OUT", "CPEC", "BCIMEC", "CCWAEC", "CICPEC", "CMREC", "NELB")
+data <- dplyr::mutate(data,
+               corridor = dplyr::case_when(
+                 country %in% CPEC ~ "CPEC",
+                 country %in% BCIMEC ~ "BCIMEC",
+                 country %in% CCWAEC ~ "CCWAEC",
+                 country %in% CICPEC ~ "CICPEC",
+                 country %in% CMREC ~ "CMREC",
+                 country %in% NELB ~ "NELB",
+                 TRUE ~ "OUT")
+)
+data$corridor <- factor(data$corridor, levels = corridors)
+```
+Kaikki Kazakstanin projektit menevät yllä CCWAEC-käytävään, vaikka osa kuuluisi varmaankin NELB-käytävään. Samoin venäjän projektit menevät CMREC-käytävään, kenties osa kuuluisi samoin NELB-käytävään.
+
+Asetetaan muut paitsi vuosi-muuttujat luokitteluasteikollisiksi muuttujiksi:
+```{r}
+factor_variables<-c("infrastructure_type", "country", "status")
+data[factor_variables] <- lapply(data[factor_variables], as.factor)
+```
+
+Kiinnostavat muuttujat näyttävät nyt seuraavalta:
+```{r}
+hist(data$start_year)
+```
+
+```{r}
+plot(data$corridor)
+```
+
+## 3. Puuttuvan datan imputointi
+
+Vain vuosi-muuttujissa on puuttuvaa dataa (%):
+```{r}
+apply(data, 2, napct)
+```
+
+Ei käytetä corridor-muuttujaa imputoinnissa selittäjänä:
+```{r}
+inlist <- names(data)[-c(7)]
+pred <- mice::quickpred(data, minpuc = 0.5, include = inlist, exclude = c("corridor"))
+pred
+```
+
+Imputoidaan kymmenen täyttä dataa:
+```{r, message=FALSE, results='hide'}
+imp <- mice::mice(data, pred = pred, seed = 12345, m = 10)
+```
+
+Ensimmäisen imputaation imputoidut arvot (punaiset ristit) näyttävät järkevältä:
+```{r}
+vnames <- c("start_year", "completion_year")
+cd1 <- mice::complete(imp)[, vnames]
+mis <- (is.na(imp$data$start_year) | is.na(imp$data$completion_year))
+cd <- data.frame(mis = mis, cd1)
+lattice::xyplot(completion_year ~ start_year,
+       data = cd,
+       groups = mis,
+       xlab = "start_year",
+       ylab = "completion_year",
+       type = c("g","p"), 
+       pch = c(1, 4),
+       scales = list(alternating = 1, tck = c(1, 0)))
+```
+
+## 4. Analyysi
+
+Otetaan datasta aikaväli 2013 - 2021, lasketaan projektien lukumäärät per maa ja vuosi, analysoidaan sekamallilla (negatiivinen binomimalli), satunnaisvaikutuksina maa ja ajan suhteen kulmakerroin. En ota aikaa kiinteään osaan, en ajattele siinä olevan mitään sellaista trendiä jota tässä haluan seurata:
+```{r, message=FALSE, results='hide'}
+fit <- with(imp, {
+  data <- data.frame(as.list(environment()))
+  data <- data[data$start_year > 2012 & data$start_year < 2022, c("country", "start_year", "corridor")]
+  data <- dplyr::mutate(data,
+                 time = case_when(
+                   start_year == 2013 ~ 1,
+                   start_year == 2014 ~ 2,
+                   start_year == 2015 ~ 3,
+                   start_year == 2016 ~ 4,
+                   start_year == 2017 ~ 5,
+                   start_year == 2018 ~ 6,
+                   start_year == 2019 ~ 7,
+                   start_year == 2020 ~ 8,
+                   start_year == 2021 ~ 9,
+                   TRUE ~ 10)
+  )
+  data <- data %>%
+    group_by(corridor, country, time) %>% 
+    summarise(project_count = n())
+
+  glmer.nb(project_count ~ corridor + (1 + time | country),
+           control=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)),
+           data = data)
+  
+})
+```
+
+Yhdistetään kymmenen eri imputaation tulokset yhdeksi:
+```{r}
+summary(pool(fit))
+```
+
+Aktiivisuus verrattuna ulkopuolisiin maihin ei olisi missään muussa käytävässä kuin CPEC tilastollisesti merkitsevä. CPEC-käytävässä, johon kuuluu vain Pakistan, on projektien käynnistämisaktiivisuus noin seitsemänkertainen (=exp(1.89)), verrattuna ulkopuolisiin maihin.
+
+## 5. Päätelmät
+
+Missään muussa käytävässä kuin CPEC, ei aineiston perusteella havaita eroa Kiinan investointiaktiivisuudessa verrattuna käytävien ulkopuolisiin maihin. Toki on mahdollista, että en valikoinut projekteja oikein. Esimerkiksi viittaamassani artikkelissa [2] oli projekteja vain 173. Lopputulos on kuitenkin siinäkin sama, CPEC on ainoa tilastollisesti merkitsevä käytävä projektien aktiivisuudessa.
+
+Tämä havainto avasi silmiä siten, että BRI leima ei välttämättä tuo lisäarvoa sopivaa investointikohdetta etsiessä esimerkiksi maakohtaisten ETF rahastojen joukosta.
+
+## 6. Projektit kartalla
+
+```{r}
+drop_map <- c(1:5, 7:31)
+keep_map <- !(1:length(all) %in% drop_map)
+data_map <- rapd[, keep_map]
+data_map <- data_map[data_map$status != "NULL",]
+data_map <- data_map[data_map$status != "Cancelled",]
+data_map <- data_map[data_map$status != "Decommissioned",]
+data_map <- cc(data_map)
+project_locations <- st_as_sf(data_map, coords = c("longitude", "latitude"), crs = 4326)
+mapview(project_locations)
+```
+
+## Lähteet
+
+[1] https://en.wikipedia.org/wiki/Interstate_Highway_System
+
+[2] https://reconasia.csis.org/chinas-belt-and-road-full-holes/
+
+[3] https://reconasia.csis.org/reconnecting-asia-map/
+
+    https://docs.google.com/spreadsheets/d/1KrNbneUU_97zilAVPWU-eEprwOYpPCo69hv2vp4hOOM/edit#gid=1987188535
+    
+    Reconnecting Asia Project Database
+    Reconnecting Asia Project, “Reconnecting Asia Project Database,” Center for Strategic and International
+    Studies, December 2020.
+    © Data compiled by The Center for Strategic and International Studies. All rights reserved.
+    
+[4] https://kraneshares.com/obor/
+
+
+
+
+
+
